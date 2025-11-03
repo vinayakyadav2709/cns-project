@@ -1,4 +1,4 @@
-# piperag_integration/parallel_pipeline.py - WITH STREAMING DETECTION
+# piperag_integration/parallel_pipeline.py - WITH VARIABLE LOGGING
 
 import torch
 import numpy as np
@@ -12,91 +12,106 @@ from .performance_model import FixedIntervalModel
 
 
 class PipeRAGParallelPipeline:
-    """
-    PipeRAG with STREAMING ANOMALY DETECTION
-    Detects anomalies AS SOON AS classification tag is generated
-    """
     
     def __init__(self, vector_db, model_name="gpt2"):
         self.vector_db = vector_db
+        self.model_name = model_name
+        self.embedder_name = 'all-MiniLM-L6-v2'
+        self.retrieval_interval = 64
         
-        print("[PipeRAG] Loading models...")
+        print("\n" + "="*70)
+        print("[PipeRAG INIT] Loading models...")
+        print("="*70)
         
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # LLM
+        print(f"[PipeRAG INIT] Loading LLM: {self.model_name}")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            self.model_name,
             torch_dtype=torch.float32
         )
+        print(f"[PipeRAG INIT] ✓ LLM loaded: {self.model_name}")
         
-        print("[PipeRAG] Loading embedding model...")
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        # Embedder
+        print(f"[PipeRAG INIT] Loading Embedder: {self.embedder_name}")
+        self.embedder = SentenceTransformer(self.embedder_name)
+        print(f"[PipeRAG INIT] ✓ Embedder loaded: {self.embedder_name}")
         
         self.retrieval_executor = ThreadPoolExecutor(max_workers=2)
-        self.perf_model = FixedIntervalModel(interval=64)
+        self.perf_model = FixedIntervalModel(interval=self.retrieval_interval)
         
         self.retrieval_future = None
-        self.lock = threading.Lock()
-        
-        # Callback for immediate detection
         self.detection_callback = None
         
-        print("[PipeRAG] Ready!")
+        vector_db_type = type(vector_db).__name__
+        print(f"[PipeRAG INIT] ✓ Retrieval interval: {self.retrieval_interval} tokens")
+        print(f"[PipeRAG INIT] ✓ Vector DB: {vector_db_type}")
+        print("="*70)
+        print("[PipeRAG INIT] Ready!\n")
     
+    # piperag_integration/parallel_pipeline.py - COMPLETE LOGGING
+
     def generate_with_streaming_retrieval(self, query, max_tokens=200, 
-                                         detection_callback=None):
-        """
-        Generate with STREAMING detection
-        Calls detection_callback IMMEDIATELY when classification tag detected
-        """
+                                        detection_callback=None):
+        """Generate with COMPLETE logging"""
         
         self.detection_callback = detection_callback
         
-        # ===== PROMPT: Force LLM to use structured format =====
+        print("\n" + "╔" + "="*68 + "╗")
+        print("║" + " "*20 + "NEW FLOW ANALYSIS" + " "*31 + "║")
+        print("╚" + "="*68 + "╝")
+        
+        # ===== LOG INPUT =====
+        print("\n[INPUT] Flow Data:")
+        print("-" * 70)
+        print(f"  {query}")
+        print("-" * 70)
+        
+        # ===== BUILD PROMPT =====
         prompt = f"""Analyze this network flow and output in EXACT format:
 
-<FLOW>
-{query}
-</FLOW>
+    <FLOW>
+    {query}
+    </FLOW>
 
-<ANALYSIS>
-Step 1: Examine characteristics
-[Your reasoning here]
-Step 2: Compare patterns
-[Your analysis here]
-</ANALYSIS>
+    <ANALYSIS>
+    Step 1: Examine flow characteristics
+    Step 2: Identify patterns
+    </ANALYSIS>
 
-<CLASSIFICATION>BENIGN</CLASSIFICATION>
-or
-<CLASSIFICATION>ATTACK:DDoS</CLASSIFICATION>
-or
-<CLASSIFICATION>ATTACK:PortScan</CLASSIFICATION>
+    <CLASSIFICATION>BENIGN</CLASSIFICATION>
 
-<CONFIDENCE>HIGH/MEDIUM/LOW</CONFIDENCE>
-
-Now analyze:
-<FLOW>{query}</FLOW>
-
-<ANALYSIS>
-"""
+    Now analyze:
+    <FLOW>{query}</FLOW>
+    <ANALYSIS>
+    """
+        
+        # ===== LOG PROMPT =====
+        print("\n[PROMPT] Full prompt sent to LLM:")
+        print("-" * 70)
+        print(prompt)
+        print("-" * 70)
         
         inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
         
         generated_tokens = []
         tokens_since_retrieval = 0
         retrieval_injected = False
-        
-        # Detection state
         detected_classification = None
         detection_triggered = False
         
-        print(f"[PipeRAG] Starting streaming generation...")
+        first_64_tokens_text = ""
+        all_generated_text = ""
+        
+        print(f"\n[GENERATION] Starting token-by-token generation (max {max_tokens})...")
+        print(f"[GENERATION] Using model: {self.model_name}")
+        print(f"[GENERATION] Retrieval will trigger at token {self.retrieval_interval}\n")
         
         # ===== TOKEN-BY-TOKEN GENERATION =====
         for i in range(max_tokens):
-            # Generate next token
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
@@ -112,88 +127,167 @@ Now analyze:
             
             # Decode current generation
             current_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            all_generated_text = current_text
             
-            # ===== STREAMING DETECTION: Check for classification tag =====
+            # Store first 64 tokens
+            if i < 64:
+                first_64_tokens_text = current_text
+            
+            # Log every 10 tokens
+            if i % 10 == 0:
+                print(f"[TOKEN {i}] Generated so far: {current_text[:100]}...")
+            
+            # ===== STREAMING DETECTION =====
             if not detection_triggered:
                 classification = self._check_classification_tag(current_text)
                 if classification:
                     detected_classification = classification
                     detection_triggered = True
                     
-                    # TRIGGER IMMEDIATE CALLBACK
-                    print(f"[PipeRAG] 🚨 DETECTION at token {i}: {classification}")
+                    print(f"\n🚨 [DETECTION at TOKEN {i}] Classification: {classification}")
+                    print(f"[DETECTION] Response at detection:")
+                    print("-" * 70)
+                    print(current_text)
+                    print("-" * 70)
                     
                     if self.detection_callback:
                         self.detection_callback(classification, current_text)
-                    
-                    # For evaluation, we can stop here or continue for full analysis
-                    # For real-time: STOP and return immediately
-                    # For evaluation: continue to get full reasoning
             
             # ===== PARALLEL RETRIEVAL TRIGGER =====
             if self.perf_model.should_trigger_retrieval(tokens_since_retrieval) and not retrieval_injected:
-                print(f"[PipeRAG] 🔥 Token {i}: Triggering retrieval")
+                print(f"\n[RETRIEVAL] 🔥 Triggering at TOKEN {i}")
+                print(f"[RETRIEVAL] Current LLM output for retrieval:")
+                print("-" * 70)
+                print(current_text)
+                print("-" * 70)
+                
+                retrieval_query = current_text
+                print(f"[RETRIEVAL] Query text length: {len(retrieval_query)} chars")
+                print(f"[RETRIEVAL] Using embedder: {self.embedder_name}")
+                print(f"[RETRIEVAL] Vector DB: {type(self.vector_db).__name__}")
                 
                 self.retrieval_future = self.retrieval_executor.submit(
-                    self._async_retrieve,
-                    current_text
+                    self._async_retrieve_with_logging,
+                    retrieval_query
                 )
                 
                 tokens_since_retrieval = 0
-                print(f"[PipeRAG] ⚡ Retrieval running in parallel...")
+                print(f"[RETRIEVAL] ⚡ Retrieval started in background thread...")
             
             # ===== INJECT CONTEXT WHEN READY =====
             if self.retrieval_future is not None and self.retrieval_future.done() and not retrieval_injected:
-                print(f"[PipeRAG] ✅ Token {i}: Context injection")
+                print(f"\n[CONTEXT] ✅ Retrieval completed at TOKEN {i}")
                 
                 retrieved_context = self.retrieval_future.result()
                 
+                print(f"[CONTEXT] Retrieved context:")
+                print("-" * 70)
+                print(retrieved_context if retrieved_context else "  [NO PATTERNS RETRIEVED]")
+                print("-" * 70)
+                
                 prompt_with_context = f"""{prompt}
-{current_text}
+    {current_text}
 
-<RETRIEVED_PATTERNS>
-{retrieved_context}
-</RETRIEVED_PATTERNS>
+    <RETRIEVED_PATTERNS>
+    {retrieved_context}
+    </RETRIEVED_PATTERNS>
 
-Continue analysis:
-"""
+    Continue analysis:
+    """
                 
                 inputs = self.tokenizer(prompt_with_context, return_tensors="pt", 
-                                       truncation=True, max_length=512)
+                                    truncation=True, max_length=512)
                 
                 retrieval_injected = True
+                print(f"[CONTEXT] 🎯 Context injected, continuing generation...")
             else:
                 inputs = {'input_ids': outputs}
             
-            # Stop at EOS or after classification
             if new_token == self.tokenizer.eos_token_id:
+                print(f"\n[GENERATION] EOS token reached at TOKEN {i}")
                 break
         
-        # Final response
-        response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # ===== LOG FIRST 64 TOKENS =====
+        print(f"\n[TOKENS] First 64 tokens generated:")
+        print("=" * 70)
+        print(first_64_tokens_text)
+        print("=" * 70)
+        
+        # ===== LOG ALL GENERATED TEXT =====
+        print(f"\n[OUTPUT] Complete LLM output ({len(all_generated_text)} chars):")
+        print("=" * 70)
+        print(all_generated_text)
+        print("=" * 70)
+        
+        # ===== FINAL RESULT =====
+        print(f"\n[RESULT] Summary:")
+        print("-" * 70)
+        print(f"  Classification: {detected_classification or 'UNKNOWN'}")
+        print(f"  Total tokens: {len(generated_tokens)}")
+        print(f"  Detection at token: {i if detection_triggered else 'NOT DETECTED'}")
+        print(f"  Retrieval injected: {'YES' if retrieval_injected else 'NO'}")
+        print("-" * 70)
         
         return {
             'classification': detected_classification or 'UNKNOWN',
-            'full_response': response,
-            'detection_token': i if detection_triggered else -1
+            'full_response': all_generated_text,
+            'detection_token': i if detection_triggered else -1,
+            'first_64_tokens': first_64_tokens_text
         }
+
+    def _async_retrieve_with_logging(self, query_text):
+        """Async retrieval WITH DETAILED LOGGING"""
+        start = time.time()
+        
+        print(f"\n[Retrieval Thread] 📍 Starting retrieval...")
+        print(f"[Retrieval Thread] Query text: {query_text[:200]}...")
+        print(f"[Retrieval Thread] Using embedder: {self.embedder_name}")
+        
+        # Get embedding
+        query_embedding = self._get_query_embedding(query_text)
+        print(f"[Retrieval Thread] Embedding shape: {query_embedding.shape}")
+        print(f"[Retrieval Thread] Embedding values (first 10): {query_embedding[:10]}")
+        
+        # Retrieve
+        print(f"[Retrieval Thread] 🔍 Querying vector DB ({type(self.vector_db).__name__})...")
+        retrieved = self.vector_db.retrieve(query_embedding, top_k=5)
+        print(f"[Retrieval Thread] ✓ Retrieved {len(retrieved)} patterns")
+        
+        # Log each pattern
+        context_lines = []
+        if len(retrieved) == 0:
+            print(f"[Retrieval Thread] ⚠️  WARNING: No patterns retrieved!")
+            print(f"[Retrieval Thread] Vector DB may be empty or query embedding mismatch")
+        else:
+            for idx, item in enumerate(retrieved, 1):
+                score, text, metadata = item
+                label = metadata.get('label', 'Unknown') if isinstance(metadata, dict) else 'Unknown'
+                
+                print(f"\n[Retrieval Thread] Pattern {idx}:")
+                print(f"  Score: {score:.4f}")
+                print(f"  Label: {label}")
+                print(f"  Text: {text[:200]}...")
+                
+                pattern_line = f"Pattern {idx} (score={score:.3f}, label={label}): {text[:150]}"
+                context_lines.append(pattern_line)
+        
+        context = "\n".join(context_lines)
+        
+        elapsed = time.time() - start
+        print(f"\n[Retrieval Thread] ✅ Retrieval complete in {elapsed:.2f}s")
+        
+        return context
+
     
     def _check_classification_tag(self, text):
-        """
-        Parse classification tag AS SOON AS it appears
-        Returns: 'BENIGN', 'ATTACK:DDoS', 'ATTACK:PortScan', etc.
-        """
-        
-        # Look for <CLASSIFICATION>XXX</CLASSIFICATION> tag
+        """Parse classification tag"""
         match = re.search(r'<CLASSIFICATION>(.*?)</CLASSIFICATION>', text, re.IGNORECASE)
         
         if match:
             classification = match.group(1).strip()
             return classification
         
-        # Fallback: look for keywords if tag not complete yet
         if '<CLASSIFICATION>' in text:
-            # Tag started, check partial content
             partial = text.split('<CLASSIFICATION>')[-1]
             
             if 'BENIGN' in partial.upper():
@@ -208,22 +302,28 @@ Continue analysis:
         return None
     
     def _async_retrieve(self, query_text):
-        """Async retrieval in parallel"""
+        """Async retrieval with logging"""
         start = time.time()
-        print(f"[Retrieval] Starting...")
+        print(f"[Retrieval Thread] Starting retrieval...")
+        print(f"[Retrieval Thread] Using embedder: {self.embedder_name}")
         
         query_embedding = self._get_query_embedding(query_text)
+        print(f"[Retrieval Thread] Embedding shape: {query_embedding.shape}")
+        
         retrieved = self.vector_db.retrieve(query_embedding, top_k=5)
+        print(f"[Retrieval Thread] Retrieved {len(retrieved)} patterns")
         
         context_lines = []
         for idx, (score, text, metadata) in enumerate(retrieved, 1):
             label = metadata.get('label', 'Unknown') if isinstance(metadata, dict) else 'Unknown'
-            context_lines.append(f"Pattern {idx} (score={score:.2f}, label={label}): {text[:150]}")
+            pattern_line = f"Pattern {idx} (score={score:.3f}, label={label}): {text[:150]}"
+            context_lines.append(pattern_line)
+            print(f"[Retrieval Thread] {pattern_line}")
         
         context = "\n".join(context_lines)
         
         elapsed = time.time() - start
-        print(f"[Retrieval] ✅ Done in {elapsed:.2f}s")
+        print(f"[Retrieval Thread] ✅ Done in {elapsed:.2f}s")
         
         return context
     
@@ -231,10 +331,11 @@ Continue analysis:
         """Get embedding"""
         semantic = self.embedder.encode([query])[0]
         padding = np.zeros(17)
-        return np.concatenate([semantic, padding])
+        embedding = np.concatenate([semantic, padding])
+        return embedding
     
     def get_simple_classification(self, result):
-        """Extract simple label for evaluation"""
+        """Extract simple label"""
         classification = result['classification']
         
         if 'BENIGN' in classification:
