@@ -1,0 +1,27 @@
+{
+  "dataset": "CICIDS2017",
+  "baseline": {
+    "accuracy": 0.5,
+    "precision": 0.25,
+    "recall": 0.5,
+    "f1_score": 0.33333333333333326,
+    "avg_latency": 0.5255167806148529,
+    "p95_latency": 0.5224895715713501,
+    "throughput": 1.9028888075277128
+  },
+  "piperag": {
+    "accuracy": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1_score": 0.0,
+    "avg_latency": 6.465855956077576,
+    "p95_latency": 7.36456283330917,
+    "throughput": 0.15465856443338347
+  },
+  "improvement": {
+    "accuracy": -0.5,
+    "precision": -0.25,
+    "f1_score": -0.33333333333333326,
+    "latency_speedup": 0.08127567087554646
+  }
+}

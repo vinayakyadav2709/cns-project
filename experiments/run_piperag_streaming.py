@@ -16,7 +16,7 @@ def main():
     print("="*60)
     
     # 1. Load preprocessed sessions
-    sessions_parquet = "../outputs/preprocessed/sessions.parquet"
+    sessions_parquet = "./outputs/preprocessed/sessions.parquet"
     sessions_df = pd.read_parquet(sessions_parquet)
     print(f"Loaded {len(sessions_df)} sessions")
     

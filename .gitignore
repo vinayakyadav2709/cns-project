@@ -54,7 +54,7 @@ data/
 # Large files
 *.tar.gz
 *.zip
-models/
+
 outputs/large_files/
 
 # Logs
